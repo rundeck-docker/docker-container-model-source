@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+
+# To implement this command, edit the "Command implementation" section below. 
+
+# Usage
+# -----
+
+# Comments prefixed with `#/` are managed by stubbs.
+# The `command` and `usage` comments describe the command
+# and show its options.
+# 
+#/ command: docker-container-model-source:get-json: "get the nodes as yaml"
+#/ usage: rerun docker-container-model-source:get-json  --docker-host <${DOCKER_HOST:-}>  --docker-tls-verify <${DOCKER_TLS_VERIFY:-}>  --docker-cert-path <${DOCKER_CERT_PATH:-}> [ --docker-machine-name <>] 
+
+# Load common functions
+# ---------------------
+
+# Load the function library for this module.
+# This loads rerun functions, too.
+. $RERUN_MODULE_DIR/lib/functions.sh get-json || { 
+  echo >&2 "Failed loading function library." ; exit 1 ; 
+}
+
+# Error handling
+# ---------------
+
+# This script is designed to _fail-fast_.
+
+# Trap errors and exit. The call to `rerun_die` will print the
+# the error message and exit with the error command exit status. 
+
+trap 'rerun_die $? "*** command failed: docker-container-model-source:get-json. ***"' ERR
+trap 'echo $? "*** command failed: docker-container-model-source:get-json. ***"' ERR
+
+# Run [set] `nounset` to treat unset variables as errors. Set [pipefail]
+# so a pipeline return status is the value of the last 
+# (rightmost) command to exit with non-zero status.
+#
+# [set]: http://ss64.com/bash/set.html
+# [pipefail]: http://www.gnu.org/software/bash/manual/html_node/Pipelines.html
+
+set -o nounset -o pipefail
+
+# Command variables
+# -----------------
+
+# This command script can access the following variables
+# declared by `rerun` or by the option parser function.
+
+#/ rerun-variables: RERUN, RERUN_VERSION, RERUN_MODULES, RERUN_MODULE_DIR
+#/ option-variables: DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_MACHINE_NAME
+
+# The `rerun_options_parse` function processes the command line
+# arguments. Each accepted command line flag results in setting 
+# one the corresponding option variables.
+
+rerun_options_parse "$@"
+
+
+# Command implementation
+# ----------------------
+
+TMP_DIR=$(mktemp -d "/tmp/docker-container-model-source:get-json.XXXX")
+
+# list the nodes
+docker ps -a       |
+# skip the header line
+sed -n '1!p'       |
+# list just the container name
+cut -f1 -d" " > $TMP_DIR/docker.ps.out
+
+IFS=$'\r\n'
+CONTAINERS=( $(< $TMP_DIR/docker.ps.out) )
+
+
+
+echo '{"nodes": {'
+i=0
+for container in ${CONTAINERS[*]:-}
+do
+    (( i++ ))
+
+    docker inspect $container > $TMP_DIR/$container.json
+
+    nodename=$(cat $TMP_DIR/$container.json | jq '.[0] | .Name'|tr -d '"')
+
+    tags="container"
+
+    if [[ "$(cat $TMP_DIR/$container.json | jq '.[0] | .State.Running')" == "true" ]]
+    then
+        status="running"
+        tags="$tags,$status"
+    fi
+
+    echo "\"/${DOCKER_MACHINE_NAME:-}/${nodename#/}\": {"
+    echo "\"tags\": [$tags]", 
+    echo " \"attributes\":"
+
+    cat $TMP_DIR/$container.json |
+    jq ".[0] | 
+{       Name: .Name,
+        Running: .State.Running,
+        Paused: .State.Paused,
+        Dead: .State.Dead,
+        ExitCode: .State.ExitCode,
+        Created: .Created,
+        Image: .Config.Image,
+        containerId: .Id,
+        IPAddress: .NetworkSettings.IPAddress,
+        hostname: .Config.Hostname,
+        username: .Config.User,
+        \"docker-host\": @text \"$DOCKER_HOST\",
+        \"docker-cert-path\": @text \"$DOCKER_CERT_PATH\",
+        \"docker-tls-verify\": @text \"$DOCKER_TLS_VERIFY\",
+        \"docker-machine-name\": @text \"${DOCKER_MACHINE_NAME:-}\",
+        \"node-executor\": @text \"docker-container-node-executor\",
+        Cmd: .Config.Cmd|tostring}" ; # TODO: join the array
+
+    (( $i < ${#CONTAINERS[*]} )) && echo "}," || echo "}"
+done
+
+echo '}
+}'
+
+
+# Done. Exit with last command exit status.
+exit $?
+
