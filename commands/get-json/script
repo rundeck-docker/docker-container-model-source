@@ -59,8 +59,18 @@ rerun_options_parse "$@"
 
 # Command implementation
 # ----------------------
+jsq() {
+    local container=$1
+    local key=$2
+    cat $TMP_DIR/$container.json | jq --raw-output ".[0] | $key"
+}
 
 TMP_DIR=$(mktemp -d "/tmp/docker-container-model-source:get-json.XXXX")
+JSON_OUT=${TMP_DIR}/resource.json
+# ui:color=color, ui:bgcolor=color, ui:icon:name=glyphicon-whatever, ui:icon:color/bgcolor
+# also ui:badges=glyphicon-a,glyphicon-b to add badges to the node
+UI_COLOR=
+UI_ICON=glyphicon-gift
 
 # list the nodes
 docker ps -a       |
@@ -72,9 +82,8 @@ cut -f1 -d" " > $TMP_DIR/docker.ps.out
 IFS=$'\r\n'
 CONTAINERS=( $(< $TMP_DIR/docker.ps.out) )
 
-
-
-echo '{"nodes": {'
+(
+echo '{'
 i=0
 for container in ${CONTAINERS[*]:-}
 do
@@ -82,46 +91,63 @@ do
 
     docker inspect $container > $TMP_DIR/$container.json
 
-    nodename=$(cat $TMP_DIR/$container.json | jq '.[0] | .Name'|tr -d '"')
+    status=
+    nodename=$(jsq $container .Name |tr -d '"')
+    is_paused=$(jsq $container .State.Paused)
+    is_running=$(jsq $container .State.Running)
+    UI_ICON_COLOR=
 
-    tags="container"
-
-    if [[ "$(cat $TMP_DIR/$container.json | jq '.[0] | .State.Running')" == "true" ]]
+    if [[ $is_running == false && $is_paused == false ]]
     then
-        status="running"
-        tags="$tags,$status"
+        status=
+        UI_BADGES=(glyphicon-off)
+    elif [[ $is_running == true && $is_paused == false ]]
+    then
+        status=running
+        UI_BADGES=(glyphicon-thumbs-up)
+        UI_ICON_COLOR=green    
+    elif [[ $is_paused == true ]]
+    then
+        status=paused
+        UI_ICON_COLOR=orange        
+        UI_BADGES=(glyphicon-pause) 
+    else
+        UI_BADGES=()
     fi
 
     echo "\"/${DOCKER_MACHINE_NAME:-}/${nodename#/}\": {"
-    echo "\"tags\": [$tags]", 
-    echo " \"attributes\":"
+    echo "\"tags\": \"container,${status:-}\"", 
 
-    cat $TMP_DIR/$container.json |
-    jq ".[0] | 
-{       Name: .Name,
-        Running: .State.Running,
-        Paused: .State.Paused,
-        Dead: .State.Dead,
-        ExitCode: .State.ExitCode,
-        Created: .Created,
-        Image: .Config.Image,
-        containerId: .Id,
-        IPAddress: .NetworkSettings.IPAddress,
-        hostname: .Config.Hostname,
-        username: .Config.User,
-        \"docker-host\": @text \"$DOCKER_HOST\",
-        \"docker-cert-path\": @text \"$DOCKER_CERT_PATH\",
-        \"docker-tls-verify\": @text \"$DOCKER_TLS_VERIFY\",
-        \"docker-machine-name\": @text \"${DOCKER_MACHINE_NAME:-}\",
-        \"node-executor\": @text \"docker-container-node-executor\",
-        Cmd: .Config.Cmd|tostring}" ; # TODO: join the array
-
+    cat <<-EOF
+        "Name": "$(jsq $container .Name)",
+        "Running": "$(jsq $container .State.Running)",
+        "Paused": "$(jsq $container .State.Paused)",
+        "Dead": "$(jsq $container .State.Dead)",
+        "ExitCode": "$(jsq $container .State.ExitCode)",
+        "Created": "$(jsq $container .Created)",
+        "Image": "$(jsq $container .Config.Image)",
+        "containerId": "$(jsq $container .Id)",
+        "IPAddress": "$(jsq $container .NetworkSettings.IPAddress)",
+        "hostname": "$(jsq $container .Config.Hostname)",
+        "username": "$(jsq $container .Config.User)",
+        "Cmd": "$(jsq $container '.Config.Cmd|join(" ")')",
+        "docker-host": "$DOCKER_HOST",
+        "docker-cert-path": "$DOCKER_CERT_PATH",
+        "docker-tls-verify": "$DOCKER_TLS_VERIFY",
+        "docker-machine-name": "${DOCKER_MACHINE_NAME:-}",
+        "node-executor": "docker-container-node-executor",
+        "ui:icon:name": "$UI_ICON",
+        "ui:icon:color": "${UI_ICON_COLOR:-}",
+        "ui:badges": "${UI_BADGES[*]:-}"
+EOF
     (( $i < ${#CONTAINERS[*]} )) && echo "}," || echo "}"
 done
 
-echo '}
-}'
+echo '}'
 
+) > $JSON_OUT
+
+cat $JSON_OUT
 
 # Done. Exit with last command exit status.
 exit $?
